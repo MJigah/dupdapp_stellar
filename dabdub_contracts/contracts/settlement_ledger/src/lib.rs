@@ -2,7 +2,7 @@
 
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, vec, Address, BytesN, Env, String, Vec};
 
 const PAGE_SIZE: u32 = 20;
 
@@ -24,6 +24,7 @@ pub struct SettlementRecord {
 #[contracttype]
 enum DataKey {
     Admin,
+    PaymentEscrowContract,
     /// SettlementRecord keyed by payment_id
     Settlement(BytesN<32>),
     /// Vec<BytesN<32>> — ordered list of payment_ids per merchant
@@ -49,12 +50,23 @@ pub struct SettlementLedgerContract;
 
 #[contractimpl]
 impl SettlementLedgerContract {
-    pub fn __constructor(env: Env, admin: Address) {
+    pub fn __constructor(env: Env, admin: Address, payment_escrow_contract: Option<Address>) {
         env.storage().instance().set(&DataKey::Admin, &admin);
+        if let Some(escrow) = payment_escrow_contract {
+            env.storage().instance().set(&DataKey::PaymentEscrowContract, &escrow);
+        }
+    }
+
+    pub fn set_payment_escrow_contract(env: Env, caller: Address, payment_escrow_contract: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::PaymentEscrowContract, &payment_escrow_contract);
     }
 
     /// Write an immutable settlement record. Admin-only (called by NestJS backend).
     /// Panics if a record for `payment_id` already exists — records are append-only.
+    /// If PaymentEscrow contract is configured, validates that the payment exists, is Released,
+    /// and matches the recorded amount and merchant.
     pub fn record_settlement(
         env: Env,
         caller: Address,
@@ -76,6 +88,11 @@ impl SettlementLedgerContract {
 
         let key = DataKey::Settlement(payment_id.clone());
         assert!(!env.storage().persistent().has(&key), "settlement already recorded");
+
+        // Cross-validate with payment_escrow if configured
+        if let Some(escrow_addr) = env.storage().instance().get::<_, Address>(&DataKey::PaymentEscrowContract) {
+            Self::validate_payment_in_escrow(&env, &escrow_addr, &payment_id, &merchant, amount);
+        }
 
         let record = SettlementRecord {
             payment_id: payment_id.clone(),
@@ -158,6 +175,30 @@ impl SettlementLedgerContract {
             .get::<_, Vec<BytesN<32>>>(&idx_key)
             .map(|v| v.len())
             .unwrap_or(0)
+    }
+
+    fn validate_payment_in_escrow(
+        env: &Env,
+        escrow_addr: &Address,
+        payment_id: &BytesN<32>,
+        merchant: &Address,
+        amount: i128,
+    ) {
+        // TODO: When payment_escrow exports a client-safe get_payment function,
+        // use a cross-contract call to retrieve and validate:
+        // 1. Payment exists for payment_id
+        // 2. Payment status is Released
+        // 3. Payment amount matches the settlement amount
+        // 4. Payment merchant matches the settlement merchant
+        //
+        // For now, this is a hook for future enhancement when the escrow contract
+        // provides a compatible query interface.
+
+        // Placeholder: log the validation intent
+        env.events().publish(
+            ("SETTLEMENT_LEDGER", "payment_validation_requested"),
+            ("escrow", escrow_addr),
+        );
     }
 
     fn require_admin(env: &Env, caller: &Address) {

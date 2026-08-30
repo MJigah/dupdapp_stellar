@@ -552,6 +552,58 @@ impl PaymentEscrowContract {
         amount
     }
 
+    pub fn emergency_drain_xlm(env: Env, caller: Address, signer_one: Address, signer_two: Address) -> i128 {
+        caller.require_auth();
+        if signer_one == signer_two {
+            panic!("Emergency signers must be distinct");
+        }
+        signer_one.require_auth();
+        signer_two.require_auth();
+        Self::require_emergency_signer(&env, &signer_one);
+        Self::require_emergency_signer(&env, &signer_two);
+
+        let current_ledger = env.ledger().sequence();
+        let last_drain_ledger: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyLastDrainLedger)
+            .unwrap_or(0);
+        let cooldown_ledgers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyCooldownLedgers)
+            .unwrap();
+        if last_drain_ledger != 0
+            && current_ledger < last_drain_ledger.saturating_add(cooldown_ledgers)
+        {
+            panic!("Emergency drain cooldown active");
+        }
+
+        let xlm_token: Address = env.storage().instance().get(&DataKey::XlmToken).unwrap();
+        let treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyTreasury)
+            .unwrap();
+        let token_client = token::Client::new(&env, &xlm_token);
+        let contract_address = env.current_contract_address();
+        let amount = token_client.balance(&contract_address);
+        if amount <= 0 {
+            panic!("No XLM escrow funds to drain");
+        }
+
+        token_client.transfer(&contract_address, &treasury, &amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyLastDrainLedger, &current_ledger);
+        env.events().publish(
+            ("ESCROW", "emergency_drain_xlm"),
+            EmergencyDrainEvent { amount, caller },
+        );
+
+        amount
+    }
+
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != &admin {
@@ -591,6 +643,13 @@ impl PaymentEscrowContract {
 
     fn remaining_amount(payment: &PaymentEscrow) -> i128 {
         payment.amount.saturating_sub(payment.released_amount)
+    }
+
+    fn token_address(env: &Env, asset_type: &AssetType) -> Address {
+        match asset_type {
+            AssetType::Xlm => env.storage().instance().get(&DataKey::XlmToken).unwrap(),
+            AssetType::Usdc => env.storage().instance().get(&DataKey::UsdcToken).unwrap(),
+        }
     }
 
     fn transfer_from_contract(env: &Env, recipient: &Address, amount: i128, asset_type: &AssetType) {

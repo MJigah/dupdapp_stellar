@@ -27,6 +27,7 @@ pub enum DataKey {
     Admin,
     FeeTiers,
     MerchantVolume(Address),
+    SettlementCaller,
 }
 
 #[contracttype]
@@ -57,6 +58,12 @@ impl FeeCalculatorContract {
         env.storage().instance().set(&DataKey::FeeTiers, &tiers);
     }
 
+    pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::SettlementCaller, &settlement_caller);
+    }
+
     pub fn get_fee_tiers(env: Env) -> Vec<FeeTier> {
         env.storage()
             .instance()
@@ -64,7 +71,15 @@ impl FeeCalculatorContract {
             .unwrap_or(vec![&env, FeeTier { threshold_usdc: 0, fee_bps: 0 }])
     }
 
-    pub fn calculate_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
+    pub fn calculate_fee(env: Env, caller: Address, merchant: Address, amount: i128) -> (i128, i128, u32) {
+        caller.require_auth();
+
+        if let Some(settlement_caller) = env.storage().instance().get::<DataKey, Address>(&DataKey::SettlementCaller) {
+            if &settlement_caller != &caller {
+                panic!("Only settlement contract can call calculate_fee");
+            }
+        }
+
         if amount <= 0 {
             panic!("amount must be > 0");
         }
