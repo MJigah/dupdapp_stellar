@@ -9,6 +9,13 @@ use soroban_sdk::{
 const DEFAULT_PAYMENT_TTL: u32 = 100;
 const EMERGENCY_COOLDOWN_LEDGERS: u32 = 50;
 
+// Issue #1023: setup_env() had unresolved merge conflicts (two divergent
+// signatures) and neither matched the current 8-argument constructor in
+// lib.rs (admin, xlm_token, usdc_token, ttl, registry, emergency_signers,
+// emergency_treasury, emergency_cooldown_ledgers). Resolved here — merging
+// both branches — only because the new dispute-after-partial-release tests
+// below need a working setup_env(). Every other pre-existing conflicted test
+// in this file is left untouched, as scoped.
 fn setup_env() -> (
     Env,
     PaymentEscrowContractClient<'static>,
@@ -17,14 +24,11 @@ fn setup_env() -> (
     Address,
     Address,
     Address,
-<<<<<<< HEAD
-    Address, // xlm
-=======
     Address,
     Address,
     Address,
     Address,
->>>>>>> pr-956-head
+    Address,
 ) {
     let env = Env::default();
     env.mock_all_auths();
@@ -34,20 +38,13 @@ fn setup_env() -> (
     let customer = Address::generate(&env);
     let merchant = Address::generate(&env);
     let token_admin = Address::generate(&env);
-<<<<<<< HEAD
 
     let usdc_asset = env.register_stellar_asset_contract_v2(token_admin.clone());
     let usdc = usdc_asset.address();
 
-    let xlm_asset = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let xlm_asset = env.register_stellar_asset_contract_v2(token_admin);
     let xlm = xlm_asset.address();
 
-    let contract_id = env.register(
-        PaymentEscrowContract,
-        (&admin, &xlm, &usdc, &DEFAULT_PAYMENT_TTL, &Option::<Address>::None),
-=======
-    let asset_contract = env.register_stellar_asset_contract_v2(token_admin);
-    let usdc = asset_contract.address();
     let emergency_signer_one = Address::generate(&env);
     let emergency_signer_two = Address::generate(&env);
     let emergency_signer_three = Address::generate(&env);
@@ -63,6 +60,7 @@ fn setup_env() -> (
         PaymentEscrowContract,
         (
             &admin,
+            &xlm,
             &usdc,
             &DEFAULT_PAYMENT_TTL,
             &Option::<Address>::None,
@@ -70,16 +68,12 @@ fn setup_env() -> (
             &emergency_treasury,
             &EMERGENCY_COOLDOWN_LEDGERS,
         ),
->>>>>>> pr-956-head
     );
     let client = PaymentEscrowContractClient::new(&env, &contract_id);
 
     // Mint USDC for customer (used by existing tests)
     token::StellarAssetClient::new(&env, &usdc).mint(&customer, &1_000_000_000i128);
 
-<<<<<<< HEAD
-    (env, client, contract_id, admin, customer, merchant, usdc, xlm)
-=======
     (
         env,
         client,
@@ -88,12 +82,12 @@ fn setup_env() -> (
         customer,
         merchant,
         usdc,
+        xlm,
         emergency_signer_one,
         emergency_signer_two,
         emergency_signer_three,
         emergency_treasury,
     )
->>>>>>> pr-956-head
 }
 
 fn make_id(env: &Env, seed: u8) -> BytesN<32> {
@@ -1230,4 +1224,84 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_one,
         &emergency_signer_two,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1023: dispute() after a partial release on the same payment.
+//
+// `release_partial` keeps status at `Pending` until fully released, so these
+// exercise the previously-untested interaction: disputing a payment *after*
+// funds have already partially flowed to the merchant.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_dispute_after_partial_release_resolves_to_customer() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 60);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+
+    // Merchant already received part of the payment.
+    client.release_partial(&admin, &payment_id, &100_000_000i128);
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Pending);
+    assert_eq!(payment.released_amount, 100_000_000);
+
+    // Customer disputes the undelivered remainder.
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "only part of the order arrived"),
+    );
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Disputed);
+    // Only the un-released remainder is still at stake.
+    assert_eq!(client.get_balance(&payment_id), 150_000_000);
+
+    // Resolved in the customer's favor.
+    client.resolve_dispute(&admin, &payment_id, &customer);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Expired);
+    assert_eq!(payment.released_amount, payment.amount);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    // Merchant keeps the 100_000_000 already released via release_partial —
+    // resolve_dispute cannot claw that back.
+    assert_eq!(token_client.balance(&merchant), 100_000_000);
+    // Customer recovers only the un-released remainder: started with
+    // 1_000_000_000, paid 250_000_000 into escrow, gets 150_000_000 back.
+    assert_eq!(token_client.balance(&customer), 900_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_dispute_after_partial_release_resolves_to_merchant() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 61);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+
+    client.release_partial(&admin, &payment_id, &100_000_000i128);
+
+    client.dispute(
+        &merchant,
+        &payment_id,
+        &String::from_str(&env, "customer wrongly withheld the rest"),
+    );
+
+    client.resolve_dispute(&admin, &payment_id, &merchant);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Released);
+    assert_eq!(payment.released_amount, payment.amount);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    // Merchant gets the 100_000_000 already released plus the 150_000_000
+    // remainder awarded by the dispute resolution.
+    assert_eq!(token_client.balance(&merchant), 250_000_000);
+    assert_eq!(token_client.balance(&customer), 750_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
 }

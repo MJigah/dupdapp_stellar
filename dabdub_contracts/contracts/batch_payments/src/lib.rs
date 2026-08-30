@@ -2,7 +2,9 @@
 
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec,
+};
 
 const MAX_BATCH_SIZE: u32 = 20;
 
@@ -12,6 +14,13 @@ enum DataKey {
     Admin,
     MinAmount,
     MaxAmount,
+    // Issue #1024: monotonically increasing per-contract counter mixed into
+    // the payment ID hash preimage so IDs can't collide across merchants or
+    // batches landing in the same ledger.
+    Counter,
+    // Issue #1024: on-chain record for each created payment, for auditability
+    // and duplicate detection.
+    Payment(BytesN<32>),
 }
 
 /// A single payment input in the batch.
@@ -30,7 +39,8 @@ pub struct PaymentInput {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct PaymentRecord {
-    /// Unique payment ID (32-byte hash derived from ledger sequence + index).
+    /// Unique payment ID (32-byte hash derived from merchant, a per-contract
+    /// counter, and the payment's contents — see issue #1024).
     pub id: BytesN<32>,
     pub amount: i128,
     pub memo: String,
@@ -131,16 +141,45 @@ impl BatchPaymentContract {
         // ── Creation pass ─────────────────────────────────────────────────────
         let mut payment_ids: Vec<BytesN<32>> = vec![&env];
 
+        // Issue #1024: a monotonically increasing per-contract counter,
+        // hashed together with the merchant and payment contents, so two
+        // merchants (or the same merchant twice) landing in the same ledger
+        // can never derive the same payment ID.
+        let mut counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Counter)
+            .unwrap_or(0u64);
+
         for i in 0..count {
             let item = payments.get(i).unwrap();
 
-            // Derive a deterministic payment ID from ledger sequence + batch index.
-            // In production this would be a proper UUID or hash of inputs.
-            let seed: u64 = (env.ledger().sequence() as u64) * 1000 + i as u64;
-            let id_bytes: BytesN<32> = env
-                .crypto()
-                .sha256(&soroban_sdk::Bytes::from_slice(&env, &seed.to_be_bytes()))
-                .into();
+            // Derive a payment ID from the merchant, the per-contract counter
+            // and the payment's own contents — not just ledger sequence + index.
+            let mut preimage = Bytes::new(&env);
+            preimage.append(&merchant.to_xdr(&env));
+            preimage.extend_from_array(&counter.to_be_bytes());
+            preimage.extend_from_array(&item.amount.to_be_bytes());
+            preimage.append(&item.memo.to_xdr(&env));
+
+            let id_bytes: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+            counter += 1;
+
+            // Issue #1024: persist a PaymentRecord on-chain for auditability
+            // and so a duplicate ID (should one ever occur) can be detected.
+            if env.storage().persistent().has(&DataKey::Payment(id_bytes.clone())) {
+                panic!("payment id collision detected");
+            }
+            let record = PaymentRecord {
+                id: id_bytes.clone(),
+                amount: item.amount,
+                memo: item.memo.clone(),
+                merchant: merchant.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Payment(id_bytes.clone()), &record);
 
             // Emit PaymentCreated event — one per batch entry.
             env.events().publish(
@@ -151,7 +190,14 @@ impl BatchPaymentContract {
             payment_ids.push_back(id_bytes);
         }
 
+        env.storage().instance().set(&DataKey::Counter, &counter);
+
         payment_ids
+    }
+
+    /// Returns the on-chain record for a previously created payment, if any.
+    pub fn get_payment(env: Env, id: BytesN<32>) -> Option<PaymentRecord> {
+        env.storage().persistent().get(&DataKey::Payment(id))
     }
 
     /// Returns the maximum allowed batch size.
