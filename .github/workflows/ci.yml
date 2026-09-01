@@ -8,7 +8,7 @@ on:
 env:
   RUSTFLAGS: -D warnings
   CARGO_INCREMENTAL: 0
-  LLVM_PROFILE_FILE: target/coverage/cheese-%p-%m.profraw
+  LLVM_PROFILE_FILE: target/coverage/dabdub-%p-%m.profraw
 
 jobs:
   ci:
@@ -29,10 +29,14 @@ jobs:
       - name: Install Rust wasm target
         run: rustup target add wasm32v1-none
 
+      # The cargo workspace lives in dabdub_contracts/; there is no manifest at
+      # the repository root, so every cargo invocation has to run from there.
       - name: cargo test
+        working-directory: dabdub_contracts
         run: cargo test
 
       - name: Generate coverage report
+        working-directory: dabdub_contracts
         run: |
           mkdir -p target/coverage
           cargo tarpaulin \
@@ -47,21 +51,31 @@ jobs:
         uses: codecov/codecov-action@v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
-          files: target/coverage/cobertura.xml
+          files: dabdub_contracts/target/coverage/cobertura.xml
           flags: rust
-          name: cheese-contracts
+          name: dabdub-contracts
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-      - name: wasm build
-        run: cargo wasm-build
+      # `make check-wasm-size` depends on `make build-optimised`, which shells
+      # out to wasm-opt. Installed the same way deploy.yml does it.
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binaryen
+
+      # Builds every workspace contract to wasm, runs wasm-opt -Oz over the
+      # output, and fails when any contract exceeds the 64 KB Soroban deploy
+      # limit. deploy.yml already gates this on `main`; running it here means a
+      # pull request that grows a contract past the limit is caught before it
+      # merges rather than after.
+      - name: Build WASM and check size budget
+        run: make check-wasm-size
 
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wasm-contracts
-          path: |
-            contracts/paylink/target/wasm32v1-none/release/paylink.wasm
-            contracts/cheese_pay/target/wasm32v1-none/release/cheese_pay.wasm
+          path: dabdub_contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 30

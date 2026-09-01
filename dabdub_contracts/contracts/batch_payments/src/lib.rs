@@ -14,13 +14,7 @@ enum DataKey {
     Admin,
     MinAmount,
     MaxAmount,
-    // Issue #1024: monotonically increasing per-contract counter mixed into
-    // the payment ID hash preimage so IDs can't collide across merchants or
-    // batches landing in the same ledger.
     Counter,
-    // Issue #1024: on-chain record for each created payment, for auditability
-    // and duplicate detection.
-    Payment(BytesN<32>),
 }
 
 /// A single payment input in the batch.
@@ -68,6 +62,7 @@ impl BatchPaymentContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::MinAmount, &min_amount);
         env.storage().instance().set(&DataKey::MaxAmount, &max_amount);
+        env.storage().instance().set(&DataKey::Counter, &0u64);
     }
 
     /// Update payment amount limits. Admin-only.
@@ -140,6 +135,7 @@ impl BatchPaymentContract {
 
         // ── Creation pass ─────────────────────────────────────────────────────
         let mut payment_ids: Vec<BytesN<32>> = vec![&env];
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap();
 
         // Issue #1024: a monotonically increasing per-contract counter,
         // hashed together with the merchant and payment contents, so two
@@ -154,32 +150,16 @@ impl BatchPaymentContract {
         for i in 0..count {
             let item = payments.get(i).unwrap();
 
-            // Derive a payment ID from the merchant, the per-contract counter
-            // and the payment's own contents — not just ledger sequence + index.
-            let mut preimage = Bytes::new(&env);
-            preimage.append(&merchant.to_xdr(&env));
-            preimage.extend_from_array(&counter.to_be_bytes());
-            preimage.extend_from_array(&item.amount.to_be_bytes());
-            preimage.append(&item.memo.to_xdr(&env));
+            let new_counter = counter + i as u64;
+            let mut seed_bytes = soroban_sdk::vec![&env];
+            seed_bytes.extend_from_array(&(env.ledger().sequence() as u64).to_be_bytes());
+            seed_bytes.extend_from_array(&new_counter.to_be_bytes());
+            seed_bytes.extend_from_array(&merchant.clone().to_xdr(&env).to_bytes().as_ref());
 
-            let id_bytes: BytesN<32> = env.crypto().sha256(&preimage).into();
-
-            counter += 1;
-
-            // Issue #1024: persist a PaymentRecord on-chain for auditability
-            // and so a duplicate ID (should one ever occur) can be detected.
-            if env.storage().persistent().has(&DataKey::Payment(id_bytes.clone())) {
-                panic!("payment id collision detected");
-            }
-            let record = PaymentRecord {
-                id: id_bytes.clone(),
-                amount: item.amount,
-                memo: item.memo.clone(),
-                merchant: merchant.clone(),
-            };
-            env.storage()
-                .persistent()
-                .set(&DataKey::Payment(id_bytes.clone()), &record);
+            let id_bytes: BytesN<32> = env
+                .crypto()
+                .sha256(&seed_bytes)
+                .into();
 
             // Emit PaymentCreated event — one per batch entry.
             env.events().publish(
@@ -190,7 +170,8 @@ impl BatchPaymentContract {
             payment_ids.push_back(id_bytes);
         }
 
-        env.storage().instance().set(&DataKey::Counter, &counter);
+        let final_counter = counter + count as u64;
+        env.storage().instance().set(&DataKey::Counter, &final_counter);
 
         payment_ids
     }

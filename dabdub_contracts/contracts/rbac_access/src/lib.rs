@@ -17,7 +17,7 @@ pub enum Role {
 #[derive(Clone)]
 pub enum DataKey {
     Role(Address),
-    SuperAdmins,  // Track active super admins for recovery and rotation
+    SuperAdminCount,
 }
 
 #[contracttype]
@@ -44,32 +44,35 @@ impl RbacAccessContract {
         // Issue #1026: Store roles in persistent() instead of instance()
         env.storage()
             .persistent()
-            .set(&DataKey::Role(super_admin.clone()), &Role::SuperAdmin);
-        // Track SuperAdmins for recovery and rotation
-        let mut admins: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
-        admins.push_back(super_admin);
+            .set(&DataKey::Role(super_admin), &Role::SuperAdmin);
         env.storage()
             .persistent()
-            .set(&DataKey::SuperAdmins, &admins);
+            .set(&DataKey::SuperAdminCount, &1u32);
     }
 
     pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::SuperAdmin);
 
-        // Issue #1026: Store roles in persistent() instead of instance()
+        let is_new_super_admin = role == Role::SuperAdmin
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Role(account.clone()));
+
         env.storage()
             .persistent()
             .set(&DataKey::Role(account.clone()), &role);
 
-        // If granting SuperAdmin, add to tracked admins
-        if role == Role::SuperAdmin {
-            if let Some(mut admins) = env.storage().persistent().get::<DataKey, soroban_sdk::Vec<Address>>(&DataKey::SuperAdmins) {
-                if !admins.iter().any(|a| a == account) {
-                    admins.push_back(account.clone());
-                    env.storage().persistent().set(&DataKey::SuperAdmins, &admins);
-                }
-            }
+        if is_new_super_admin {
+            let count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SuperAdminCount)
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::SuperAdminCount, &(count + 1));
         }
 
         env.events().publish(
@@ -86,9 +89,8 @@ impl RbacAccessContract {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::SuperAdmin);
 
-        // Issue #1026: Prevent self-revocation and removing the last SuperAdmin
-        if &account == &caller {
-            panic!("cannot revoke your own role");
+        if caller == account {
+            panic!("cannot revoke own role");
         }
 
         let key = DataKey::Role(account.clone());
@@ -96,31 +98,26 @@ impl RbacAccessContract {
             panic!("role not assigned");
         }
 
-        // Check if this is a SuperAdmin
-        if let Some(role) = env.storage().persistent().get::<DataKey, Role>(&key) {
-            if role == Role::SuperAdmin {
-                if let Some(admins) = env.storage().persistent().get::<DataKey, soroban_sdk::Vec<Address>>(&DataKey::SuperAdmins) {
-                    // Prevent removing the last SuperAdmin
-                    let remaining_admins: usize = admins.iter()
-                        .filter(|a| {
-                            if a == &account {
-                                false
-                            } else if let Some(role) = env.storage().persistent().get::<DataKey, Role>(&DataKey::Role(a.clone())) {
-                                role == Role::SuperAdmin
-                            } else {
-                                false
-                            }
-                        })
-                        .count();
+        let role: Role = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("role not assigned");
 
-                    if remaining_admins == 0 {
-                        panic!("cannot revoke the last SuperAdmin");
-                    }
-                }
+        if role == Role::SuperAdmin {
+            let count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SuperAdminCount)
+                .unwrap_or(0);
+            if count <= 1 {
+                panic!("cannot revoke last super admin");
             }
+            env.storage()
+                .persistent()
+                .set(&DataKey::SuperAdminCount, &(count - 1));
         }
 
-        // Issue #1026: Store roles in persistent() instead of instance()
         env.storage().persistent().remove(&key);
         env.events().publish(
             ("RBAC", "role_revoked"),
@@ -132,7 +129,6 @@ impl RbacAccessContract {
     }
 
     pub fn get_role(env: Env, account: Address) -> Option<Role> {
-        // Issue #1026: Use persistent() instead of instance()
         env.storage().persistent().get(&DataKey::Role(account))
     }
 
@@ -152,6 +148,34 @@ impl RbacAccessContract {
     pub fn execute_read_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::ReadOnly);
+    }
+
+    pub fn transfer_super_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        Self::require_role(&env, &caller, Role::SuperAdmin);
+
+        if caller == new_admin {
+            panic!("cannot transfer to self");
+        }
+
+        let caller_key = DataKey::Role(caller.clone());
+        if !env.storage().persistent().has(&caller_key) {
+            panic!("caller is not an admin");
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Role(new_admin.clone()), &Role::SuperAdmin);
+        env.storage().persistent().remove(&caller_key);
+
+        env.events().publish(
+            ("RBAC", "super_admin_transferred"),
+            RoleGrantedEvent {
+                account: new_admin,
+                role: Role::SuperAdmin,
+                granted_by: caller,
+            },
+        );
     }
 
     fn require_role(env: &Env, caller: &Address, minimum_role: Role) {

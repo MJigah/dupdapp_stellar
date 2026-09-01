@@ -9,6 +9,8 @@ This repository contains the Soroban (Stellar smart contract platform) contracts
 - **Backend (Settlement API)** — `dupdap-backend`
 - **Frontend (Merchant & Customer Portal)** — `dupdap-frontend`
 
+API work tracked in this repository is implemented in the backend; see [the backend API implementation note](docs/backend-api-implementation.md).
+
 ## Contracts
 
 All contracts live under [`dupdapp_contract/contracts/`](dupdapp_contract/contracts/):

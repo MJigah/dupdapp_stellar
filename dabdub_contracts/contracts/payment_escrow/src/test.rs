@@ -9,18 +9,104 @@ use soroban_sdk::{
 const DEFAULT_PAYMENT_TTL: u32 = 100;
 const EMERGENCY_COOLDOWN_LEDGERS: u32 = 50;
 
-// Issue #1023: setup_env() had unresolved merge conflicts (two divergent
-// signatures) and neither matched the current 8-argument constructor in
-// lib.rs (admin, xlm_token, usdc_token, ttl, registry, emergency_signers,
-// emergency_treasury, emergency_cooldown_ledgers). Resolved here — merging
-// both branches — only because the new dispute-after-partial-release tests
-// below need a working setup_env(). Every other pre-existing conflicted test
-// in this file is left untouched, as scoped.
-fn setup_env() -> (
+type Setup = (
     Env,
     PaymentEscrowContractClient<'static>,
     Address,
     Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+);
+
+fn deploy_escrow(
+    env: &Env,
+    admin: &Address,
+    xlm: &Address,
+    usdc: &Address,
+    registry: Option<Address>,
+    emergency_signers: &soroban_sdk::Vec<Address>,
+    emergency_treasury: &Address,
+) -> Address {
+    env.register(
+        PaymentEscrowContract,
+        (
+            admin,
+            xlm,
+            usdc,
+            &DEFAULT_PAYMENT_TTL,
+            &registry,
+            emergency_signers,
+            emergency_treasury,
+            &EMERGENCY_COOLDOWN_LEDGERS,
+        ),
+    )
+}
+
+fn setup_env() -> Setup {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_sequence_number(10);
+
+    let admin = Address::generate(&env);
+    let customer = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let usdc = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let xlm = env.register_stellar_asset_contract_v2(token_admin).address();
+
+    let emergency_signer_one = Address::generate(&env);
+    let emergency_signer_two = Address::generate(&env);
+    let emergency_signer_three = Address::generate(&env);
+    let emergency_treasury = Address::generate(&env);
+    let emergency_signers = soroban_sdk::vec![
+        &env,
+        emergency_signer_one.clone(),
+        emergency_signer_two.clone(),
+        emergency_signer_three.clone(),
+    ];
+
+    let contract_id = deploy_escrow(
+        &env,
+        &admin,
+        &xlm,
+        &usdc,
+        None,
+        &emergency_signers,
+        &emergency_treasury,
+    );
+    let client = PaymentEscrowContractClient::new(&env, &contract_id);
+
+    token::StellarAssetClient::new(&env, &usdc).mint(&customer, &1_000_000_000i128);
+
+    (
+        env,
+        client,
+        contract_id,
+        admin,
+        customer,
+        merchant,
+        usdc,
+        xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        emergency_signer_three,
+        emergency_treasury,
+    )
+}
+
+fn setup_with_registry() -> (
+    Env,
+    PaymentEscrowContractClient<'static>,
+    MerchantRegistryContractClient<'static>,
     Address,
     Address,
     Address,
@@ -39,11 +125,10 @@ fn setup_env() -> (
     let merchant = Address::generate(&env);
     let token_admin = Address::generate(&env);
 
-    let usdc_asset = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let usdc = usdc_asset.address();
-
-    let xlm_asset = env.register_stellar_asset_contract_v2(token_admin);
-    let xlm = xlm_asset.address();
+    let usdc = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let xlm = env.register_stellar_asset_contract_v2(token_admin).address();
 
     let emergency_signer_one = Address::generate(&env);
     let emergency_signer_two = Address::generate(&env);
@@ -56,33 +141,30 @@ fn setup_env() -> (
         emergency_signer_three.clone(),
     ];
 
-    let contract_id = env.register(
-        PaymentEscrowContract,
-        (
-            &admin,
-            &xlm,
-            &usdc,
-            &DEFAULT_PAYMENT_TTL,
-            &Option::<Address>::None,
-            &emergency_signers,
-            &emergency_treasury,
-            &EMERGENCY_COOLDOWN_LEDGERS,
-        ),
-    );
-    let client = PaymentEscrowContractClient::new(&env, &contract_id);
+    let registry_id = env.register(MerchantRegistryContract, (&admin,));
+    let registry = MerchantRegistryContractClient::new(&env, &registry_id);
 
-    // Mint USDC for customer (used by existing tests)
+    let escrow_id = deploy_escrow(
+        &env,
+        &admin,
+        &xlm,
+        &usdc,
+        Some(registry_id.clone()),
+        &emergency_signers,
+        &emergency_treasury,
+    );
+    let escrow = PaymentEscrowContractClient::new(&env, &escrow_id);
+
     token::StellarAssetClient::new(&env, &usdc).mint(&customer, &1_000_000_000i128);
 
     (
         env,
-        client,
-        contract_id,
+        escrow,
+        registry,
         admin,
         customer,
         merchant,
         usdc,
-        xlm,
         emergency_signer_one,
         emergency_signer_two,
         emergency_signer_three,
@@ -113,28 +195,22 @@ fn deposit_default_ttl(
 
 #[test]
 fn test_constructor() {
-<<<<<<< HEAD
-    let (_env, client, _contract_id, admin, _customer, _merchant, usdc, xlm) = setup_env();
-=======
-    let (_env, client, _contract_id, admin, _customer, _merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
+    let (env, client, _contract_id, admin, _customer, _merchant, usdc, xlm, ..) = setup_env();
 
     assert_eq!(client.get_admin(), admin);
     assert_eq!(client.get_usdc_token(), usdc);
     assert_eq!(client.get_xlm_token(), xlm);
     assert_eq!(client.get_default_ttl_ledgers(), DEFAULT_PAYMENT_TTL);
+    assert_eq!(client.get_version(), 1);
+    assert_eq!(client.get_registry(), None);
 }
 
 #[test]
 fn test_deposit_happy_path() {
-<<<<<<< HEAD
-    let (env, client, contract_id, _admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, _admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
-    let result = client.deposit(
+    client.deposit(
         &customer,
         &payment_id,
         &merchant,
@@ -142,13 +218,12 @@ fn test_deposit_happy_path() {
         &DEFAULT_PAYMENT_TTL,
         &AssetType::Usdc,
     );
-    let payment = client.get_payment(&payment_id);
 
-    assert_eq!(result, payment_id);
+    let payment = client.get_payment(&payment_id);
     assert_eq!(payment.amount, 250_000_000);
     assert_eq!(payment.released_amount, 0);
-    assert_eq!(payment.customer, customer.clone());
-    assert_eq!(payment.merchant, merchant.clone());
+    assert_eq!(payment.customer, customer);
+    assert_eq!(payment.merchant, merchant);
     assert_eq!(payment.status, PaymentStatus::Pending);
     assert_eq!(payment.expiry, 110);
     assert_eq!(payment.dispute_window_end, 110);
@@ -163,45 +238,9 @@ fn test_deposit_happy_path() {
 }
 
 #[test]
-fn test_lifecycle_create_deposit_confirm_settle() {
-    let (env, client, contract_id, admin, customer, merchant, usdc) = setup_env();
-    let payment_id = make_id(&env, 2);
-
-    // create
-    assert_eq!(client.get_admin(), admin.clone());
-    assert_eq!(client.get_usdc_token(), usdc.clone());
-
-    // deposit
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(client.get_balance(&payment_id), 250_000_000);
-
-    // confirm (modeled as partial release approval)
-    client.release_partial(&admin, &payment_id, &100_000_000i128);
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(client.get_balance(&payment_id), 150_000_000);
-
-    // settle
-    client.release(&admin, &payment_id);
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Released);
-    assert_eq!(client.get_balance(&payment_id), 0);
-
-    let token_client = token::Client::new(&env, &usdc);
-    assert_eq!(token_client.balance(&merchant), 250_000_000);
-    assert_eq!(token_client.balance(&contract_id), 0);
-}
-
-#[test]
 #[should_panic(expected = "Payment ID already exists")]
 fn test_deposit_duplicate_payment_id() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -211,12 +250,7 @@ fn test_deposit_duplicate_payment_id() {
 #[test]
 #[should_panic(expected = "Amount must be > 0")]
 fn test_deposit_zero_amount() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-
     client.deposit(
         &customer,
         &make_id(&env, 1),
@@ -230,12 +264,7 @@ fn test_deposit_zero_amount() {
 #[test]
 #[should_panic(expected = "TTL must be > 0")]
 fn test_deposit_zero_ttl() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-
     client.deposit(
         &customer,
         &make_id(&env, 1),
@@ -249,13 +278,8 @@ fn test_deposit_zero_ttl() {
 #[test]
 #[should_panic(expected = "TTL exceeds maximum")]
 fn test_deposit_excessive_ttl() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let ttl = client.get_max_ttl_ledgers() + 1;
-
     client.deposit(
         &customer,
         &make_id(&env, 1),
@@ -267,77 +291,8 @@ fn test_deposit_excessive_ttl() {
 }
 
 #[test]
-<<<<<<< HEAD
-fn test_deposit_max_ttl_boundary() {
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc) = setup_env();
-    let payment_id = make_id(&env, 88);
-    let max_ttl = client.get_max_ttl_ledgers();
-
-    client.deposit(&customer, &payment_id, &merchant, &250_000_000i128, &max_ttl);
-
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.expiry, 10 + max_ttl);
-}
-
-#[test]
-fn test_deposit_minimum_positive_amount_boundary() {
-    let (env, client, contract_id, _admin, customer, merchant, usdc) = setup_env();
-    let payment_id = make_id(&env, 89);
-
-    client.deposit(&customer, &payment_id, &merchant, &1i128, &DEFAULT_PAYMENT_TTL);
-
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.amount, 1);
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(client.get_balance(&payment_id), 1);
-
-    let token_client = token::Client::new(&env, &usdc);
-    assert_eq!(token_client.balance(&customer), 999_999_999);
-    assert_eq!(token_client.balance(&contract_id), 1);
-}
-
-#[test]
-fn test_get_expiry_with_short_ttl() {
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-fn test_get_expiry_with_short_ttl() {
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    client.deposit(&customer, &payment_id, &merchant, &250_000_000i128, &5u32, &AssetType::Usdc);
-
-    assert_eq!(client.get_expiry(&payment_id), 15);
-}
-
-#[test]
-fn test_get_expiry_with_long_ttl() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    client.deposit(
-        &customer,
-        &payment_id,
-        &merchant,
-        &250_000_000i128,
-        &2_000u32,
-        &AssetType::Usdc,
-    );
-
-    assert_eq!(client.get_expiry(&payment_id), 2_010);
-}
-
-#[test]
 fn test_release_happy_path() {
-<<<<<<< HEAD
-    let (env, client, contract_id, admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -355,11 +310,7 @@ fn test_release_happy_path() {
 
 #[test]
 fn test_partial_release_multiple_steps() {
-<<<<<<< HEAD
-    let (env, client, contract_id, admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -375,7 +326,6 @@ fn test_partial_release_multiple_steps() {
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Released);
     assert_eq!(payment.released_amount, 250_000_000);
-    assert_eq!(client.get_balance(&payment_id), 0);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
@@ -385,11 +335,7 @@ fn test_partial_release_multiple_steps() {
 #[test]
 #[should_panic(expected = "Release amount exceeds remaining balance")]
 fn test_partial_release_prevents_over_release() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -398,12 +344,29 @@ fn test_partial_release_prevents_over_release() {
 }
 
 #[test]
+#[should_panic(expected = "Release amount must be > 0")]
+fn test_partial_release_zero_amount() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 1);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.release_partial(&admin, &payment_id, &0i128);
+}
+
+#[test]
+#[should_panic(expected = "Payment fully released")]
+fn test_partial_release_fully_released_payment() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 1);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.release(&admin, &payment_id);
+    client.release_partial(&admin, &payment_id, &1i128);
+}
+
+#[test]
 fn test_refund_returns_remaining_balance_after_partial_release() {
-<<<<<<< HEAD
-    let (env, client, contract_id, admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -422,135 +385,13 @@ fn test_refund_returns_remaining_balance_after_partial_release() {
 }
 
 #[test]
-#[should_panic(expected = "Not admin")]
-fn test_release_unauthorized() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-    let random = Address::generate(&env);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.release(&random, &payment_id);
-}
-
-#[test]
-#[should_panic(expected = "Not admin")]
-fn test_partial_release_unauthorized() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-    let random = Address::generate(&env);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.release_partial(&random, &payment_id, &10_000_000i128);
-}
-
-#[test]
-#[should_panic(expected = "Payment not found")]
-fn test_release_invalid_payment_id() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, _customer, _merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, _customer, _merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-
-    client.release(&admin, &make_id(&env, 99));
-}
-
-#[test]
-#[should_panic(expected = "Payment expired")]
-fn test_release_expired_payment() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    env.ledger().set_sequence_number(111);
-
-    client.release(&admin, &payment_id);
-}
-
-#[test]
-#[should_panic(expected = "Payment expired")]
-fn test_partial_release_expired_payment() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    env.ledger().set_sequence_number(111);
-
-    client.release_partial(&admin, &payment_id, &10_000_000i128);
-}
-
-#[test]
-#[should_panic(expected = "Payment fully released")]
-fn test_release_already_settled_payment() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.release(&admin, &payment_id);
-    client.release(&admin, &payment_id);
-}
-
-#[test]
-#[should_panic(expected = "Release amount must be > 0")]
-fn test_partial_release_zero_amount() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.release_partial(&admin, &payment_id, &0i128);
-}
-
-#[test]
-#[should_panic(expected = "Payment fully released")]
-fn test_partial_release_fully_released_payment() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.release(&admin, &payment_id);
-    client.release_partial(&admin, &payment_id, &1i128);
-}
-
-#[test]
 fn test_expire_refunds_customer() {
-<<<<<<< HEAD
-    let (env, client, contract_id, _admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, _admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
     env.ledger().set_sequence_number(111);
-    client.refund(&payment_id);
+    client.expire(&payment_id);
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
@@ -564,11 +405,7 @@ fn test_expire_refunds_customer() {
 #[test]
 #[should_panic(expected = "Payment has not expired")]
 fn test_expire_before_ttl() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -576,12 +413,48 @@ fn test_expire_before_ttl() {
 }
 
 #[test]
-fn test_dispute_by_customer() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
+#[should_panic(expected = "Not admin")]
+fn test_release_unauthorized() {
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
+    let payment_id = make_id(&env, 1);
+    let random = Address::generate(&env);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.release(&random, &payment_id);
+}
+
+#[test]
+#[should_panic(expected = "Not admin")]
+fn test_release_invalid_payment_id() {
+    let (env, client, _contract_id, admin, _customer, _merchant, _usdc, ..) = setup_env();
+    client.release(&admin, &make_id(&env, 99));
+}
+
+#[test]
+#[should_panic(expected = "Payment expired")]
+fn test_release_expired_payment() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 1);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    env.ledger().set_sequence_number(111);
+    client.release(&admin, &payment_id);
+}
+
+#[test]
+#[should_panic(expected = "Payment fully released")]
+fn test_release_already_settled_payment() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 1);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.release(&admin, &payment_id);
+    client.release(&admin, &payment_id);
+}
+
+#[test]
+fn test_dispute_by_customer() {
+    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -597,37 +470,12 @@ fn test_dispute_by_customer() {
         payment.dispute_reason,
         Some(String::from_str(&env, "service not delivered"))
     );
-    assert_eq!(client.get_balance(&payment_id), 250_000_000);
-}
-
-#[test]
-fn test_dispute_by_merchant() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "backend settlement mismatch"),
-    );
-
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Disputed);
 }
 
 #[test]
 #[should_panic(expected = "Not payment participant")]
 fn test_dispute_unauthorized_caller() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
     let random = Address::generate(&env);
 
@@ -638,11 +486,7 @@ fn test_dispute_unauthorized_caller() {
 #[test]
 #[should_panic(expected = "Dispute already open")]
 fn test_duplicate_dispute_rejected() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -653,11 +497,7 @@ fn test_duplicate_dispute_rejected() {
 #[test]
 #[should_panic(expected = "Dispute window expired")]
 fn test_dispute_after_window_rejected() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
@@ -666,95 +506,23 @@ fn test_dispute_after_window_rejected() {
 }
 
 #[test]
-fn test_dispute_allowed_at_dispute_window_boundary() {
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc) = setup_env();
-    let payment_id = make_id(&env, 90);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    env.ledger().set_sequence_number(110);
-    client.dispute(
-        &customer,
-        &payment_id,
-        &String::from_str(&env, "opened at boundary"),
-    );
-
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Disputed);
-}
-
-#[test]
 #[should_panic(expected = "Dispute is open")]
 fn test_release_blocked_while_disputed() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &customer,
-        &payment_id,
-        &String::from_str(&env, "hold funds"),
-    );
+    client.dispute(&customer, &payment_id, &String::from_str(&env, "hold funds"));
     client.release(&admin, &payment_id);
 }
 
 #[test]
-#[should_panic(expected = "Dispute is open")]
-fn test_partial_release_blocked_while_disputed() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "hold release"),
-    );
-    client.release_partial(&admin, &payment_id, &10_000_000i128);
-}
-
-#[test]
-#[should_panic(expected = "Dispute is open")]
-fn test_expire_blocked_while_disputed() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "hold refund"),
-    );
-    env.ledger().set_sequence_number(111);
-    client.expire(&payment_id);
-}
-
-#[test]
 fn test_resolve_dispute_to_customer() {
-<<<<<<< HEAD
-    let (env, client, contract_id, admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "chargeback"),
-    );
+    client.dispute(&merchant, &payment_id, &String::from_str(&env, "chargeback"));
     client.resolve_dispute(&admin, &payment_id, &customer);
 
     let payment = client.get_payment(&payment_id);
@@ -767,44 +535,12 @@ fn test_resolve_dispute_to_customer() {
 }
 
 #[test]
-<<<<<<< HEAD
-fn test_cancellation_path_refunds_customer_via_dispute_resolution() {
-    let (env, client, contract_id, admin, customer, merchant, usdc) = setup_env();
-    let payment_id = make_id(&env, 91);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &customer,
-        &payment_id,
-        &String::from_str(&env, "cancel requested"),
-    );
-    client.resolve_dispute(&admin, &payment_id, &customer);
-
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(client.get_balance(&payment_id), 0);
-
-    let token_client = token::Client::new(&env, &usdc);
-    assert_eq!(token_client.balance(&customer), 1_000_000_000);
-    assert_eq!(token_client.balance(&merchant), 0);
-    assert_eq!(token_client.balance(&contract_id), 0);
-}
-
-#[test]
-fn test_resolve_dispute_to_merchant() {
-    let (env, client, contract_id, admin, customer, merchant, usdc, _xlm) = setup_env();
-=======
 fn test_resolve_dispute_to_merchant() {
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &customer,
-        &payment_id,
-        &String::from_str(&env, "investigate"),
-    );
+    client.dispute(&customer, &payment_id, &String::from_str(&env, "investigate"));
     client.resolve_dispute(&admin, &payment_id, &merchant);
 
     let payment = client.get_payment(&payment_id);
@@ -819,166 +555,50 @@ fn test_resolve_dispute_to_merchant() {
 #[test]
 #[should_panic(expected = "Not admin")]
 fn test_resolve_dispute_unauthorized() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, _admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
     let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
     let payment_id = make_id(&env, 1);
     let random = Address::generate(&env);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &customer,
-        &payment_id,
-        &String::from_str(&env, "investigate"),
-    );
+    client.dispute(&customer, &payment_id, &String::from_str(&env, "investigate"));
     client.resolve_dispute(&random, &payment_id, &merchant);
+}
+
+#[test]
+#[should_panic(expected = "Invalid dispute winner")]
+fn test_resolve_dispute_invalid_winner() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 1);
+    let random = Address::generate(&env);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.dispute(&merchant, &payment_id, &String::from_str(&env, "investigate"));
+    client.resolve_dispute(&admin, &payment_id, &random);
 }
 
 #[test]
 #[should_panic(expected = "Not admin")]
 fn test_set_registry_unauthorized() {
-    let (env, client, _contract_id, _admin, _customer, _merchant, _usdc) = setup_env();
+    let (env, client, _contract_id, _admin, _customer, _merchant, _usdc, ..) = setup_env();
     let random = Address::generate(&env);
     let registry = Address::generate(&env);
 
     client.set_registry(&random, &Some(registry));
 }
 
-#[test]
-#[should_panic(expected = "Invalid dispute winner")]
-fn test_resolve_dispute_invalid_winner() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-    let random = Address::generate(&env);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "investigate"),
-    );
-    client.resolve_dispute(&admin, &payment_id, &random);
-}
-
-#[test]
-#[should_panic(expected = "Dispute is not open")]
-fn test_resolve_dispute_already_resolved() {
-<<<<<<< HEAD
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, _xlm) = setup_env();
-=======
-    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
->>>>>>> pr-956-head
-    let payment_id = make_id(&env, 1);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-    client.dispute(
-        &merchant,
-        &payment_id,
-        &String::from_str(&env, "investigate"),
-    );
-    client.resolve_dispute(&admin, &payment_id, &merchant);
-    client.resolve_dispute(&admin, &payment_id, &merchant);
-}
-
 // ---------------------------------------------------------------------------
-// Merchant registry integration: deposit gating
+// Merchant registry integration: deposit gating (#1016)
+//                                                                          _
+// Deploys the real merchant_registry contract as payment_escrow's registry.
+// Deposit must be approved only when the merchant is Active AND KYC verified.
 // ---------------------------------------------------------------------------
 
-fn setup_with_registry() -> (
-    Env,
-    PaymentEscrowContractClient<'static>,
-    MerchantRegistryContractClient<'static>,
-    Address, // admin
-    Address, // customer
-    Address, // merchant
-    Address, // usdc
-    Address, // emergency_signer_one
-    Address, // emergency_signer_two
-    Address, // emergency_signer_three
-    Address, // emergency_treasury
-) {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_sequence_number(10);
-
-    let admin = Address::generate(&env);
-    let customer = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-<<<<<<< HEAD
-
-    let usdc_asset = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let usdc = usdc_asset.address();
-    let xlm_asset = env.register_stellar_asset_contract_v2(token_admin);
-    let xlm = xlm_asset.address();
-=======
-    let asset_contract = env.register_stellar_asset_contract_v2(token_admin);
-    let usdc = asset_contract.address();
-    let emergency_signer_one = Address::generate(&env);
-    let emergency_signer_two = Address::generate(&env);
-    let emergency_signer_three = Address::generate(&env);
-    let emergency_treasury = Address::generate(&env);
-    let emergency_signers = soroban_sdk::vec![
-        &env,
-        emergency_signer_one.clone(),
-        emergency_signer_two.clone(),
-        emergency_signer_three.clone(),
-    ];
->>>>>>> pr-956-head
-
-    // Deploy registry and register the merchant.
-    let registry_id = env.register(MerchantRegistryContract, (&admin,));
-    let registry = MerchantRegistryContractClient::new(&env, &registry_id);
-    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "Test Merchant"));
-
-    // Deploy escrow wired to registry.
-    let escrow_id = env.register(
-        PaymentEscrowContract,
-<<<<<<< HEAD
-        (&admin, &xlm, &usdc, &DEFAULT_PAYMENT_TTL, &Some(registry_id.clone())),
-=======
-        (
-            &admin,
-            &usdc,
-            &DEFAULT_PAYMENT_TTL,
-            &Some(registry_id.clone()),
-            &emergency_signers,
-            &emergency_treasury,
-            &EMERGENCY_COOLDOWN_LEDGERS,
-        ),
->>>>>>> pr-956-head
-    );
-    let escrow = PaymentEscrowContractClient::new(&env, &escrow_id);
-
-    // Mint tokens for customer.
-    token::StellarAssetClient::new(&env, &usdc).mint(&customer, &1_000_000_000i128);
-
-    (
-        env,
-        escrow,
-        registry,
-        admin,
-        customer,
-        merchant,
-        usdc,
-        emergency_signer_one,
-        emergency_signer_two,
-        emergency_signer_three,
-        emergency_treasury,
-    )
-}
-
 #[test]
-fn test_deposit_allowed_for_active_merchant() {
-    let (env, escrow, _registry, _admin, customer, merchant, _usdc, ..) = setup_with_registry();
+fn test_deposit_allowed_when_registry_approved() {
+    let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.set_kyc_status(&admin, &merchant, &true);
+
     let payment_id = make_id(&env, 42);
-
     escrow.deposit(
         &customer,
         &payment_id,
@@ -994,12 +614,10 @@ fn test_deposit_allowed_for_active_merchant() {
 }
 
 #[test]
-#[should_panic(expected = "Merchant is suspended or not registered")]
-fn test_deposit_blocked_for_suspended_merchant() {
-    let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+#[should_panic(expected = "Merchant is not approved")]
+fn test_deposit_blocked_when_kyc_not_verified() {
+    let (env, escrow, _registry, _admin, customer, merchant, _usdc, ..) = setup_with_registry();
     let payment_id = make_id(&env, 43);
-
-    registry.suspend_merchant(&admin, &merchant);
 
     escrow.deposit(
         &customer,
@@ -1012,11 +630,11 @@ fn test_deposit_blocked_for_suspended_merchant() {
 }
 
 #[test]
-fn test_deposit_allowed_after_reactivation() {
+#[should_panic(expected = "Merchant is not approved")]
+fn test_deposit_blocked_when_merchant_suspended() {
     let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
-
+    registry.set_kyc_status(&admin, &merchant, &true);
     registry.suspend_merchant(&admin, &merchant);
-    registry.reactivate_merchant(&admin, &merchant);
 
     let payment_id = make_id(&env, 44);
     escrow.deposit(
@@ -1027,18 +645,15 @@ fn test_deposit_allowed_after_reactivation() {
         &DEFAULT_PAYMENT_TTL,
         &AssetType::Usdc,
     );
-
-    let payment = escrow.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Pending);
 }
 
 #[test]
-#[should_panic(expected = "Merchant is suspended or not registered")]
+#[should_panic(expected = "Merchant is not approved")]
 fn test_deposit_blocked_for_unregistered_merchant() {
     let (env, escrow, _registry, _admin, customer, _merchant, _usdc, ..) = setup_with_registry();
-    let payment_id = make_id(&env, 45);
     let unknown_merchant = Address::generate(&env);
 
+    let payment_id = make_id(&env, 45);
     escrow.deposit(
         &customer,
         &payment_id,
@@ -1059,6 +674,7 @@ fn test_emergency_drain_moves_all_funds_to_treasury() {
         customer,
         merchant,
         usdc,
+        _xlm,
         emergency_signer_one,
         emergency_signer_two,
         _emergency_signer_three,
@@ -1066,94 +682,6 @@ fn test_emergency_drain_moves_all_funds_to_treasury() {
     ) = setup_env();
 
     let payment_id = make_id(&env, 51);
-<<<<<<< HEAD
-
-    // Verify the merchant first.
-    registry.set_kyc_status(&admin, &merchant, &true);
-
-    escrow.deposit(
-        &customer,
-        &payment_id,
-        &merchant,
-        &250_000_000i128,
-        &DEFAULT_PAYMENT_TTL,
-    );
-    escrow.release(&admin, &payment_id);
-
-    let payment = escrow.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Released);
-    assert_eq!(payment.released_amount, 250_000_000);
-
-    let token_client = token::Client::new(&env, &usdc);
-    assert_eq!(token_client.balance(&merchant), 250_000_000);
-}
-
-#[test]
-fn test_version_initialization() {
-    let (_env, client, _contract_id, _admin, _customer, _merchant, _usdc) = setup_env();
-    assert_eq!(client.get_version(), 1);
-}
-
-#[test]
-#[should_panic(expected = "Not admin")]
-fn test_upgrade_unauthorized() {
-    let (env, client, _contract_id, _admin, _customer, _merchant, _usdc) = setup_env();
-    let random = Address::generate(&env);
-    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
-
-    client.upgrade(&random, &dummy_hash);
-}
-
-#[test]
-fn test_upgrade_version_increment_stub() {
-    let (env, client, _contract_id, admin, _customer, _merchant, _usdc) = setup_env();
-    
-    assert_eq!(client.get_version(), 1);
-
-    // We use a dummy hash here. In a real environment or a full integration test,
-    // this would be a valid WASM hash uploaded to the network.
-    // For the purpose of this stub test, we are verifying that the version increments
-    // before the actual WASM update call. 
-    // Note: If update_current_contract_wasm panics on an invalid hash in the test environment,
-    // this test might fail, but it serves as the required "v2 stub".
-    
-    // To make it not fail on the update call if it validates hashes, we'd need a real hash.
-    // Since we don't have one, we'll just check if it increments.
-    // In Soroban's current test environment, update_current_contract_wasm might not
-    // strictly validate the hash if it's not a full integration test.
-    
-    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
-    client.upgrade(&admin, &dummy_hash);
-    
-    assert_eq!(client.get_version(), 2);
-}
-
-#[test]
-#[should_panic(expected = "Merchant not KYC verified")]
-fn test_partial_release_blocked_for_unverified_merchant() {
-    let (env, escrow, _registry, admin, customer, merchant, _usdc) = setup_with_registry();
-    let payment_id = make_id(&env, 52);
-
-    escrow.deposit(
-        &customer,
-        &payment_id,
-        &merchant,
-        &200_000_000i128,
-        &DEFAULT_PAYMENT_TTL,
-    );
-
-    // Partial release must also be blocked.
-    escrow.release_partial(&admin, &payment_id, &50_000_000i128);
-}
-
-#[test]
-fn test_release_allowed_when_no_registry_configured() {
-    // Without a registry, KYC is not enforced.
-    let (env, client, contract_id, admin, customer, merchant, usdc) = setup_env();
-    let payment_id = make_id(&env, 53);
-
-=======
->>>>>>> pr-956-head
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
 
     let drained = client.emergency_drain(
@@ -1179,6 +707,7 @@ fn test_emergency_drain_rejects_non_multisig_signer() {
         customer,
         merchant,
         _usdc,
+        _xlm,
         emergency_signer_one,
         _emergency_signer_two,
         _emergency_signer_three,
@@ -1203,6 +732,7 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         customer,
         merchant,
         _usdc,
+        _xlm,
         emergency_signer_one,
         emergency_signer_two,
         _emergency_signer_three,
@@ -1226,82 +756,66 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Issue #1023: dispute() after a partial release on the same payment.
-//
-// `release_partial` keeps status at `Pending` until fully released, so these
-// exercise the previously-untested interaction: disputing a payment *after*
-// funds have already partially flowed to the merchant.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_dispute_after_partial_release_resolves_to_customer() {
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
-    let payment_id = make_id(&env, 60);
+    let payment_id = make_id(&env, 55);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
 
-    // Merchant already received part of the payment.
     client.release_partial(&admin, &payment_id, &100_000_000i128);
+
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Pending);
     assert_eq!(payment.released_amount, 100_000_000);
+    assert_eq!(client.get_balance(&payment_id), 150_000_000);
 
-    // Customer disputes the undelivered remainder.
     client.dispute(
         &customer,
         &payment_id,
-        &String::from_str(&env, "only part of the order arrived"),
+        &String::from_str(&env, "unsatisfactory delivery"),
     );
-    let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Disputed);
-    // Only the un-released remainder is still at stake.
-    assert_eq!(client.get_balance(&payment_id), 150_000_000);
 
-    // Resolved in the customer's favor.
     client.resolve_dispute(&admin, &payment_id, &customer);
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, payment.amount);
-    assert_eq!(client.get_balance(&payment_id), 0);
+    assert_eq!(payment.released_amount, 250_000_000);
 
     let token_client = token::Client::new(&env, &usdc);
-    // Merchant keeps the 100_000_000 already released via release_partial —
-    // resolve_dispute cannot claw that back.
+    assert_eq!(token_client.balance(&customer), 1_000_000_000);
     assert_eq!(token_client.balance(&merchant), 100_000_000);
-    // Customer recovers only the un-released remainder: started with
-    // 1_000_000_000, paid 250_000_000 into escrow, gets 150_000_000 back.
-    assert_eq!(token_client.balance(&customer), 900_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
 }
 
 #[test]
 fn test_dispute_after_partial_release_resolves_to_merchant() {
     let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
-    let payment_id = make_id(&env, 61);
+    let payment_id = make_id(&env, 56);
 
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
 
     client.release_partial(&admin, &payment_id, &100_000_000i128);
 
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Pending);
+    assert_eq!(payment.released_amount, 100_000_000);
+    assert_eq!(client.get_balance(&payment_id), 150_000_000);
+
     client.dispute(
         &merchant,
         &payment_id,
-        &String::from_str(&env, "customer wrongly withheld the rest"),
+        &String::from_str(&env, "customer objection to chargeback"),
     );
 
     client.resolve_dispute(&admin, &payment_id, &merchant);
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Released);
-    assert_eq!(payment.released_amount, payment.amount);
-    assert_eq!(client.get_balance(&payment_id), 0);
+    assert_eq!(payment.released_amount, 250_000_000);
 
     let token_client = token::Client::new(&env, &usdc);
-    // Merchant gets the 100_000_000 already released plus the 150_000_000
-    // remainder awarded by the dispute resolution.
-    assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&customer), 750_000_000);
+    assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
 }

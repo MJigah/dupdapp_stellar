@@ -341,8 +341,8 @@ impl PaymentEscrowContract {
         if remaining <= 0 {
             panic!("Payment fully released");
         }
+        Self::transfer_from_contract(&env, &payment.customer, remaining, &payment.asset_type);
 
-        Self::transfer_from_contract(&env, &payment.customer, remaining);
         payment.released_amount = payment.amount;
         payment.status = PaymentStatus::Expired;
         env.storage()
@@ -602,6 +602,13 @@ impl PaymentEscrowContract {
 
     fn remaining_amount(payment: &PaymentEscrow) -> i128 {
         payment.amount.saturating_sub(payment.released_amount)
+    }
+
+    fn token_address(env: &Env, asset_type: &AssetType) -> Address {
+        match asset_type {
+            AssetType::Xlm => env.storage().instance().get(&DataKey::XlmToken).unwrap(),
+            AssetType::Usdc => env.storage().instance().get(&DataKey::UsdcToken).unwrap(),
+        }
     }
 
     fn transfer_from_contract(env: &Env, recipient: &Address, amount: i128, asset_type: &AssetType) {

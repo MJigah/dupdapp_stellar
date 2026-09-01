@@ -371,6 +371,47 @@ fn test_get_merchant_includes_kyc_field() {
 }
 
 // ---------------------------------------------------------------------------
+// is_approved
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_approved_false_until_kyc_verified() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    assert!(!client.is_approved(&merchant));
+}
+
+#[test]
+fn test_is_approved_true_when_active_and_kyc_verified() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.set_kyc_status(&admin, &merchant, &true);
+    assert!(client.is_approved(&merchant));
+}
+
+#[test]
+fn test_is_approved_false_when_suspended_even_if_kyc_verified() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.set_kyc_status(&admin, &merchant, &true);
+    client.suspend_merchant(&admin, &merchant);
+    assert!(!client.is_approved(&merchant));
+}
+
+#[test]
+fn test_is_approved_false_for_unknown() {
+    let (env, client, _admin) = setup();
+    let unknown = Address::generate(&env);
+    assert!(!client.is_approved(&unknown));
+}
+
+// ---------------------------------------------------------------------------
 // update_fee_tier / get_fee_tier
 // ---------------------------------------------------------------------------
 
@@ -432,4 +473,72 @@ fn test_update_fee_tier_unauthorized() {
 
     client.register_merchant(&admin, &merchant, &sample_name(&env));
     client.update_fee_tier(&attacker, &merchant, &200);
+}
+
+// ---------------------------------------------------------------------------
+// merchants (paginated listing) / update_merchant (#697)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merchants_paginated_listing() {
+    let (env, client, admin) = setup();
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+
+    client.register_merchant(&admin, &m1, &sample_name(&env));
+    client.register_merchant(&admin, &m2, &sample_name(&env));
+    client.register_merchant(&admin, &m3, &sample_name(&env));
+
+    let page0 = client.merchants(&0, &2);
+    assert_eq!(page0.len(), 2);
+    assert_eq!(page0.get(0).unwrap().merchant, m1);
+    assert_eq!(page0.get(1).unwrap().merchant, m2);
+
+    let page1 = client.merchants(&1, &2);
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1.get(0).unwrap().merchant, m3);
+}
+
+#[test]
+fn test_merchants_empty_when_no_merchants() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.merchants(&0, &10).len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "page size must be > 0")]
+fn test_merchants_zero_page_size_panics() {
+    let (_env, client, _admin) = setup();
+    client.merchants(&0, &0);
+}
+
+#[test]
+fn test_update_merchant_name() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.update_merchant(&admin, &merchant, &String::from_str(&env, "New Name"));
+
+    assert_eq!(client.get_merchant(&merchant).name, String::from_str(&env, "New Name"));
+}
+
+#[test]
+#[should_panic(expected = "Merchant not found")]
+fn test_update_merchant_unknown_panics() {
+    let (env, client, admin) = setup();
+    let unknown = Address::generate(&env);
+    client.update_merchant(&admin, &unknown, &String::from_str(&env, "x"));
+}
+
+#[test]
+#[should_panic(expected = "Not admin")]
+fn test_update_merchant_unauthorized() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.update_merchant(&attacker, &merchant, &String::from_str(&env, "x"));
 }
